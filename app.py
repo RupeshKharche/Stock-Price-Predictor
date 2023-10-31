@@ -32,11 +32,10 @@ def fetchStockData(ticker):
 	data = data.reset_index()
 	data['Date'] = pd.to_datetime(data['Date'], format='dd-mm-yyyy')
 	if(collection.count_documents({}) > 0 and collection.count_documents({}) < len(data)):
+		collection.delete_many({})
 		collection.insert_many(data.to_dict('records'))
-		data = pd.DataFrame(collection.find())
 		return data
 	elif(collection.count_documents({}) == 0):
-		data = data.reset_index()
 		collection.insert_many(data.to_dict('records'))
 		return data
 	else:
@@ -99,7 +98,5 @@ if(f'{modelName}.h5' in os.listdir(os.getcwd())):
 	plt.legend()
 	plt.show()
 	st.pyplot(fig)
-
-	#st.write(f'Predicted Price: {formatted}')
 else:
 	st.write('Model not available')
