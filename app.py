@@ -1,79 +1,105 @@
-import json
-
-import plotly
-import plotly.express as px
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import tensorflow as tf
 import yfinance as yf
-from flask import Flask, render_template, request
+import streamlit as st
 from sklearn.preprocessing import MinMaxScaler
+import os
+from pymongo import *
 
-app = Flask(__name__, template_folder='templates')
+# Connecting to database
+mongoURL = 'mongodb://localhost:27017/'
+dbName = 'stock-db'
+mongoClient = MongoClient(mongoURL)
 
-# Min Max Scaler
-scaler = MinMaxScaler()
-
-# Loading the model
-model = tf.keras.models.load_model("model.h5", compile=False)
-model.compile()
-
-# Define the root route
-@app.route('/')
-def index():
-	return render_template('index.html')
+db = mongoClient.get_database(dbName)
 
 
-@app.route('/callback/<endpoint>')
-def cb(endpoint):
-	if endpoint == "getStock":
-		return gm(request.args.get('data'), request.args.get('period'), request.args.get('interval'))
-	elif endpoint == "getInfo":
-		stock = request.args.get('data')
-		st = yf.Ticker(stock)
-		return json.dumps(st.info)
+st.set_page_config(page_title='Stock Price Prediction')
+st.title("Stock Price Prediction")
+
+# Ticker input from user
+ticker = st.selectbox("Choose a ticker", ['AAPL', 'GOOG', 'BAJFINANCE.NS', 'INFY.NS'], placeholder='Select a ticker')
+tickerLowerCase = str(ticker).lower()
+
+collection = db.get_collection(tickerLowerCase)
+
+# Function to fetch stock data
+@st.cache_data
+def fetchStockData(ticker):
+	data = yf.Ticker(ticker).history(period='max')
+	data = data.reset_index()
+	data['Date'] = pd.to_datetime(data['Date'], format='dd-mm-yyyy')
+	if(collection.count_documents({}) > 0 and collection.count_documents({}) < len(data)):
+		collection.insert_many(data.to_dict('records'))
+		data = pd.DataFrame(collection.find())
+		return data
+	elif(collection.count_documents({}) == 0):
+		data = data.reset_index()
+		collection.insert_many(data.to_dict('records'))
+		return data
 	else:
-		return "Bad endpoint", 400
+		return pd.DataFrame(collection.find())
 
 
-# Return the JSON data for the Plotly graph
-def gm(stock, period, interval):
-	st = yf.Ticker(stock)
+data = fetchStockData(ticker)
+# Displaying graph of the stock data
+st.subheader(f'Close Prices Vs Date for {ticker}')
+st.line_chart(data, x='Date', y='Close')
 
-	# Create a line graph
-	df = st.history(period=(period), interval=interval)
-	df = df.reset_index()
-	df.columns = ['Date-Time'] + list(df.columns[1:])
-	max = (df['Open'].max())
-	min = (df['Open'].min())
-	range = max - min
-	margin = range * 0.05
-	max = max + margin
-	min = min - margin
-	fig = px.line(df, x='Date-Time', y="Open",
-	              hover_data=("Open", "Close", "Volume"),
-	              range_y=(min, max), template="seaborn")
+# Ticker dict
+tickerDict = dict({'GOOG' : 'goog', 'AAPL' : 'aapl', 'INFY.NS' : 'infy', 'BAJFINANCE.NS' : 'baj'})
 
-	# Create a JSON representation of the graph
-	graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+# Loading the saved model from the ticker name
+modelName = tickerDict[ticker]
 
-	# Getting the last 7 close prices of the stock
-	windowPrices = df['Close'].to_numpy().reshape(-1, 1)[:-7]
+if(f'{modelName}.h5' in os.listdir(os.getcwd())):
+	model = tf.keras.models.load_model(f'{modelName}.h5', compile=False)
+	model.compile()
 
-	# Getting the predicted price of the stock
-	predictedPrice = predict(windowPrices)
+	scaler = MinMaxScaler()
 
-	# Creating a JSON object of the graph and predicted price
-	result = json.dumps({
-		"graph": graphJSON,
-		"predictedPrice": predictedPrice.tolist()
-	})
+	split = int(len(data) * 0.8)
+	closePrices = data['Close'].iloc[split:].to_numpy().reshape(-1, 1)
+	scaledClose = scaler.fit_transform(closePrices)
 
-	return result
+	# Use 7 days of close prices to predict the 8th day's close price
+	WINDOW = 7
 
+	# Creating windows and labels
+	X = []
+	y = []
 
-def predict(windowPrices):
-	scaledPrices = scaler.fit_transform(windowPrices)
-	predictedPrice = model.predict(scaledPrices)
-	return scaler.inverse_transform(predictedPrice)
+	for i in range(WINDOW, len(scaledClose)):
+		X.append(scaledClose[i - WINDOW:i])
+		y.append(scaledClose[i])
 
-if __name__ == "__main__":
-	app.run(debug=False, port=8001)
+	X, y = np.array(X), np.array(y)
+
+	X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
+	# Predicting the stock price
+	predictedPrices = scaler.inverse_transform(model.predict(X))
+
+	st.header(f'Prediction for {ticker}')
+
+	predictedPrice = scaler.inverse_transform(model.predict(X[-1:]))
+	formattedPrice = "{:.2f}".format(predictedPrice[0][0])
+	st.subheader(f'Predicted Price: {formattedPrice}')
+
+	dates = pd.to_datetime(data['Date'], format='dd-mm-yyyy').iloc[-len(y):].values
+
+	# fig = go.line(scaler.inverse_transform(y))
+	# fig.add_scatter(x=predictedPrices, y=predictedPrices, mode='lines')
+
+	fig = plt.figure(figsize=(7, 7))
+	plt.plot(dates, scaler.inverse_transform(y), c='g', label='Actual Price')
+	plt.plot(dates, predictedPrices, c='r', label='Predicted Price')
+	plt.legend()
+	plt.show()
+	st.pyplot(fig)
+
+	#st.write(f'Predicted Price: {formatted}')
+else:
+	st.write('Model not available')
