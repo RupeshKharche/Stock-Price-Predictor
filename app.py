@@ -9,8 +9,8 @@ import os
 from pymongo import *
 
 # Connecting to database
-mongoURL = 'mongodb://localhost:27017/'
-dbName = 'stock-db'
+mongoURL = 'Your database URL'
+dbName = 'Your database name'
 mongoClient = MongoClient(mongoURL)
 
 db = mongoClient.get_database(dbName)
